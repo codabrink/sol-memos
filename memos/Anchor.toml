@@ -6,10 +6,11 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-memos = "H7vhVbT3VHTTBNN6Um6WQT956TD2LEgQUgbJxaeuKtFu"
+memos = "9vGhzj9p9sZgMBkf7TSfyj9c9ruaADpBv2XWnTJqdKHM"
 
 [provider]
-cluster = "localnet"
+# cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

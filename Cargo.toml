@@ -1,0 +1,23 @@
+[package]
+name = "metadao"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+
+[dependencies]
+anchor-client = { version = "1.0.0", features = ["async"] }
+anchor-lang = "1.0.0"
+anyhow = "1.0.102"
+dotenvy = "0.15.7"
+helius = "1.0.1"
+tokio = { version = "1.51.0", features = ["full"]}
+memos = { path = "./memos/programs/memos" }
+shellexpand = "3.1.2"
+solana-sdk = "3"
+# serde_json = "1.0.149"
+# serde = { version = "1.0.228", features = ["derive"] }
+solana-system-interface = "3.2.0"
+tokio-stream = "0.1.18"
+tokio-tungstenite = "0.28.0"
+
+[build-dependencies]
