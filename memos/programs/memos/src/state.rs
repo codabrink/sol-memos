@@ -3,5 +3,10 @@ use anchor_lang::prelude::*;
 #[account]
 pub struct Memo {
     pub memo: String,
-    pub timestamp: u64,
+    pub count: u64,
+}
+
+#[account]
+pub struct MemoCounter {
+    pub count: u64,
 }

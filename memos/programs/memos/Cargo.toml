@@ -20,7 +20,7 @@ custom-heap = []
 custom-panic = []
 
 [dependencies]
-anchor-lang = "1.0.0"
+anchor-lang = { version = "1.0.0", features = ["init-if-needed"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

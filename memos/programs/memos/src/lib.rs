@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("ACG4xRMJg3gREHYKR3pNSdCvLidU8g39GEVbvGu43J2e");
+declare_id!("DffF8iBBZwgq991CCkTcEAkhwBsvbihVd3Ch1r661C4A");
 
 #[program]
 pub mod memos {
@@ -17,4 +17,5 @@ pub mod memos {
     pub fn store_memo(ctx: Context<StoreMemo>, text: String) -> Result<()> {
         store_memo::handler(ctx, text)
     }
+
 }

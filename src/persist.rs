@@ -82,14 +82,14 @@ pub async fn load_memos(ctx: Arc<Ctx>) -> Result<()> {
 #[derive(Serialize, Deserialize)]
 pub struct MemoSave {
     memo: String,
-    timestamp: u64,
+    count: u64,
 }
 
 impl From<memos::Memo> for MemoSave {
     fn from(memo: memos::Memo) -> Self {
         Self {
             memo: memo.memo,
-            timestamp: memo.timestamp,
+            count: memo.count,
         }
     }
 }
@@ -103,7 +103,7 @@ impl From<MemoSave> for memos::Memo {
     fn from(save: MemoSave) -> Self {
         Self {
             memo: save.memo,
-            timestamp: save.timestamp,
+            count: save.count,
         }
     }
 }

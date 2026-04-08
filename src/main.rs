@@ -333,7 +333,7 @@ impl App {
             match event {
                 UiEvent::MemoInbox(memos) => {
                     for (sig, memo) in memos {
-                        self.inbox.insert((memo.timestamp, sig), memo.memo);
+                        self.inbox.insert((memo.count, sig), memo.memo);
                     }
                 }
                 UiEvent::MemoPublished(published_id) => {
@@ -344,7 +344,7 @@ impl App {
                 }
                 UiEvent::Stored(memos) => {
                     for (sig, memo) in memos {
-                        let k = (memo.timestamp, sig);
+                        let k = (memo.count, sig);
                         self.inbox.remove(&k);
                         self.storebox.insert(k, memo.memo);
                     }
@@ -403,11 +403,11 @@ impl App {
             }
             KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(idx) = self.storebox_list_state.selected() {
-                    if let Some(((.., sig), memo)) = self.storebox.iter().nth(idx) {
-                        let sig = sig.clone();
+                    if let Some(((.., pubkey), memo)) = self.storebox.iter().nth(idx) {
+                        let pubkey = pubkey.clone();
                         if let Some(clipboard) = &mut self.clipboard {
-                            tracing::info!("Copying memo to clipboard: {sig}");
-                            let _ = clipboard.set_text(format!("Signature: {sig}\nMemo: {memo}"));
+                            tracing::info!("Copying memo to clipboard: {pubkey}");
+                            let _ = clipboard.set_text(format!("Pubkey: {pubkey}\nMemo: {memo}"));
                         }
                     }
                 }

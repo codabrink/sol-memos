@@ -2,7 +2,7 @@ use crate::{
     Ctx, UiEvent,
     persist::{self, store_memos},
 };
-use anchor_client::{Client, Cluster, CommitmentConfig, Signer};
+use anchor_client::{Client, Cluster, CommitmentConfig};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use helius::types::{
@@ -10,7 +10,6 @@ use helius::types::{
     TransactionSubscribeFilter, TransactionSubscribeOptions,
 };
 use solana_client::rpc_response::UiAccountData;
-use solana_sdk::signature::Keypair;
 use solana_system_interface::program as system_program;
 use std::sync::{Arc, atomic::Ordering};
 use tokio_stream::StreamExt;
@@ -34,8 +33,8 @@ pub async fn task_stream_chain(ctx: Arc<Ctx>) -> Result<()> {
         },
     };
     let (mut stream, _unsub) = ws.transaction_subscribe(config).await?;
-    while let Some(n) = stream.next().await {
-        fetch_memos(&ctx, Some(n.slot)).await?;
+    while let Some(notify) = stream.next().await {
+        fetch_memos(&ctx, Some(notify.slot)).await?;
     }
 
     Ok(())
@@ -81,22 +80,34 @@ async fn fetch_memos(ctx: &Arc<Ctx>, changed_since_slot: Option<u64>) -> Result<
 
 /// Publishes a memo to the chain on the memos program.
 pub async fn publish_memo(ctx: Arc<Ctx>, id: usize, memo: String) -> Result<()> {
-    let memo_kp = Arc::new(Keypair::new());
-    let memo_pubkey = memo_kp.pubkey();
-
     let client = Client::new_with_options(
         Cluster::Devnet,
         ctx.payer.clone(),
         CommitmentConfig::processed(),
     );
     let program = client.program(memos::ID)?;
+    let payer = program.payer();
+
+    let (counter_pda, _) =
+        solana_sdk::pubkey::Pubkey::find_program_address(&[payer.as_ref(), b"counter"], &memos::ID);
+
+    let count = program
+        .account::<memos::MemoCounter>(counter_pda)
+        .await
+        .map(|c| c.count)
+        .unwrap_or(0);
+
+    let (memo_pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[payer.as_ref(), b"memo", &count.to_le_bytes()],
+        &memos::ID,
+    );
 
     program
         .request()
-        .signer(memo_kp)
         .accounts(memos::accounts::StoreMemo {
-            memo: memo_pubkey,
-            signer: program.payer(),
+            counter: counter_pda,
+            memo: memo_pda,
+            signer: payer,
             system_program: system_program::ID,
         })
         .args(memos::instruction::StoreMemo { text: memo })
