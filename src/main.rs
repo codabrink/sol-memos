@@ -445,9 +445,14 @@ impl App {
                 let id = ID.fetch_add(1, Ordering::SeqCst);
 
                 self.outbox.push((id, memo.clone()));
-                self.ctx
-                    .runtime
-                    .spawn(publish_memo(self.ctx.clone(), id, memo));
+                self.ctx.runtime.spawn({
+                    let ctx = self.ctx.clone();
+                    async move {
+                        if let Err(err) = publish_memo(ctx, id, memo).await {
+                            tracing::error!("Error publishing memo {err:?}");
+                        }
+                    }
+                });
             }
             KeyCode::Up => match self.focus {
                 Pane::Inbox => self.inbox_list_state.select_previous(),
@@ -511,8 +516,10 @@ impl Ctx {
             anyhow::Ok(helius)
         })?;
 
-        let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
-            .expect("Example requires a keypair file");
+        let Ok(payer) = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json")) else {
+            eprintln!("Missing payer keypair at ~/.config/solana/id.json");
+            std::process::exit(1);
+        };
 
         Ok(Self {
             tx,

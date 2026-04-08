@@ -4,17 +4,29 @@ use crate::{
 };
 use anchor_client::{Client, Cluster, CommitmentConfig};
 use anchor_lang::AccountDeserialize;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use helius::types::{
     GetProgramAccountsV2Config, RpcTransactionsConfig, TransactionCommitment,
     TransactionSubscribeFilter, TransactionSubscribeOptions,
 };
 use solana_client::rpc_response::UiAccountData;
 use solana_system_interface::program as system_program;
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 use tokio_stream::StreamExt;
 
 pub async fn task_stream_chain(ctx: Arc<Ctx>) -> Result<()> {
+    loop {
+        if let Err(err) = task_stream_chain_inner(ctx.clone()).await {
+            tracing::error!("Streaming error: {err:?}");
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+pub async fn task_stream_chain_inner(ctx: Arc<Ctx>) -> Result<()> {
     // Load the slot from cache (if it exists)
     persist::load_slot(ctx.clone()).await?;
     // Fetch any memos we have missed while offline.
@@ -23,7 +35,7 @@ pub async fn task_stream_chain(ctx: Arc<Ctx>) -> Result<()> {
     // as cached.
     crate::persist::load_memos(ctx.clone()).await?;
 
-    let ws = ctx.helius.ws().unwrap();
+    let ws = ctx.helius.ws().context("Missing websocket feature.")?;
 
     let config = RpcTransactionsConfig {
         filter: TransactionSubscribeFilter::standard(&memos::ID),

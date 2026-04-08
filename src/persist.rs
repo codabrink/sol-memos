@@ -21,7 +21,8 @@ pub async fn store_memos(ctx: Arc<Ctx>, memos: Vec<(String, memos::Memo)>, slot:
     for (pda, memo) in &memos {
         let save: MemoSave = memo.into();
         let ser_memo = serde_json::to_string(&save).unwrap();
-        pipe.set(format!("memo-{pda}"), &ser_memo).ignore();
+        pipe.set(format!("memo:{pda}"), &ser_memo).ignore();
+        pipe.sadd("memos:index", pda).ignore();
     }
     if let Some(ref key) = slot {
         pipe.set("slot", key).ignore();
@@ -48,28 +49,32 @@ pub async fn load_slot(ctx: Arc<Ctx>) -> Result<()> {
 pub async fn load_memos(ctx: Arc<Ctx>) -> Result<()> {
     let con = ctx.redis.lock().await;
     let mut con = con.get_multiplexed_async_connection().await?;
-    let keys: Vec<String> = con.keys("memo-*").await?;
+    let pdas: Vec<String> = con.smembers("memos:index").await?;
 
-    if keys.is_empty() {
+    if pdas.is_empty() {
         return Ok(());
     }
 
-    let values: Vec<String> = con.mget(&keys).await?;
+    let keys: Vec<String> = pdas.iter().map(|p| format!("memo:{p}")).collect();
+    let values: Vec<Option<String>> = con.mget(&keys).await?;
 
     let values: Vec<Option<memos::Memo>> = values
         .into_iter()
         .map(|m| {
-            let save: Option<MemoSave> = serde_json::from_str(&m)
-                .inspect_err(|e| tracing::error!("Error deserializing memo from redis: {e:?}"))
-                .ok();
+            let save: Option<MemoSave> = m.and_then(|s| {
+                serde_json::from_str(&s)
+                    .inspect_err(|e| {
+                        tracing::error!("Error deserializing memo from redis: {e:?}")
+                    })
+                    .ok()
+            });
             save
         })
         .map(|m| m.map(Into::into))
         .collect();
 
-    let memos = keys
+    let memos = pdas
         .into_iter()
-        .map(|k| k.trim_start_matches("memo-").to_string())
         .zip(values)
         .filter_map(|(k, v)| Some((k, v?)))
         .collect();
