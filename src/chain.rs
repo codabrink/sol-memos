@@ -1,15 +1,17 @@
+use anchor_client::{Client, Cluster, CommitmentConfig, Signer};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use helius::types::{
     GetProgramAccountsV2Config, RpcTransactionsConfig, TransactionSubscribeFilter,
     TransactionSubscribeOptions,
 };
-use serde_json::Value;
-use solana_client::{rpc_config::UiAccountEncoding, rpc_response::UiAccountData};
+use solana_client::rpc_response::UiAccountData;
+use solana_sdk::signature::Keypair;
+use solana_system_interface::program as system_program;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
-use crate::{Ctx, UiEvent};
+use crate::{Ctx, UiEvent, persist::store_memos};
 
 pub async fn stream_chain(app: Arc<Ctx>) -> Result<()> {
     let mut pagination_key = fetch_memos(&app, None).await?;
@@ -28,7 +30,8 @@ pub async fn stream_chain(app: Arc<Ctx>) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_memos(ctx: &Ctx, pagination_key: Option<String>) -> Result<Option<String>> {
+/// Fetches all of the memos after a provided pagination key
+async fn fetch_memos(ctx: &Arc<Ctx>, pagination_key: Option<String>) -> Result<Option<String>> {
     let response = ctx
         .helius
         .rpc()
@@ -42,20 +45,51 @@ async fn fetch_memos(ctx: &Ctx, pagination_key: Option<String>) -> Result<Option
         )
         .await?;
 
+    let mut memos = vec![];
     for gpa in response.accounts {
-        let bytes = gpa
-            .account
-            .data
-            .as_array()
-            .and_then(|v| v.as_array())
-            .and_then(|v: &[Value; 2]| v[0].as_str())
-            .map(|v| UiAccountData::Binary(v.to_string(), UiAccountEncoding::Base64Zstd))
-            .and_then(|v| v.decode())
-            .expect("Data arrived in unexpected format.");
+        let account_data: UiAccountData = serde_json::from_value(gpa.account.data)?;
+        let bytes = account_data.decode().expect("Unexpected format");
 
         let memo = memos::Memo::try_deserialize(&mut &*bytes)?;
-        let _ = ctx.tx.send(UiEvent::MemoInbox((gpa.pubkey, memo)));
+        memos.push((gpa.pubkey, memo));
     }
 
+    let _ = ctx.tx.send(UiEvent::MemoInbox(memos.clone()));
+    // Store the memos in redis
+    tokio::spawn(store_memos(
+        ctx.clone(),
+        memos,
+        response.pagination_key.clone(),
+    ));
+
     Ok(response.pagination_key)
+}
+
+/// Publishes a memo to the chain on the memos program.
+pub async fn publish_memo(ctx: Arc<Ctx>, id: usize, memo: String) -> Result<()> {
+    let memo_kp = Arc::new(Keypair::new());
+    let memo_pubkey = memo_kp.pubkey();
+
+    let client = Client::new_with_options(
+        Cluster::Devnet,
+        ctx.payer.clone(),
+        CommitmentConfig::processed(),
+    );
+    let program = client.program(memos::ID)?;
+
+    program
+        .request()
+        .signer(memo_kp)
+        .accounts(memos::accounts::StoreMemo {
+            memo: memo_pubkey,
+            signer: program.payer(),
+            system_program: system_program::ID,
+        })
+        .args(memos::instruction::StoreMemo { text: memo })
+        .send()
+        .await?;
+
+    ctx.tx.send(UiEvent::MemoPublished(id))?;
+
+    Ok(())
 }

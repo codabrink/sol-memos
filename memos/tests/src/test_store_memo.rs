@@ -1,5 +1,5 @@
 use anchor_client::{Client, Cluster, CommitmentConfig, Signer};
-use solana_keypair::{read_keypair_file, Keypair};
+use solana_keypair::{Keypair, read_keypair_file};
 use solana_pubkey::Pubkey;
 
 #[test]
@@ -29,6 +29,7 @@ fn test_store_memo() {
 
     let memo_account: memos::Memo = program.account(memo_keypair.pubkey()).unwrap();
     assert_eq!(memo_account.memo, text);
+    assert_ne!(memo_account.timestamp, 0);
 
     // Now we try to create a memo that is too large.
     let memo_keypair = Keypair::new();
