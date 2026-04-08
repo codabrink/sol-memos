@@ -13,7 +13,7 @@ use helius::types::Cluster as HeliusCluster;
 use helius::{Helius, error::HeliusError};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{List, ListState};
+use ratatui::widgets::{Cell, List, ListState, Row, Table, TableState};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::Rect,
@@ -96,7 +96,7 @@ struct App {
     inbox_list_state: ListState,
 
     storebox: BTreeMap<(u64, String), String>,
-    storebox_list_state: ListState,
+    storebox_list_state: TableState,
 
     logs: Vec<String>,
     logs_list_state: ListState,
@@ -153,7 +153,7 @@ impl App {
             inbox_list_state: ListState::default().with_selected(Some(0)),
 
             storebox: BTreeMap::new(),
-            storebox_list_state: ListState::default().with_selected(Some(0)),
+            storebox_list_state: TableState::default(),
 
             logs: Vec::new(),
             logs_list_state: ListState::default().with_selected(Some(0)),
@@ -205,9 +205,17 @@ impl App {
         // Draw the storebox (What's in redis)
         self.draw_storebox(frame, column_layout[1]);
 
+        self.draw_hotkeys(frame, outer_layout[2]);
+
         if self.focus == Pane::Logs {
             self.draw_logs_overlay(frame);
         }
+    }
+
+    fn draw_hotkeys(&self, frame: &mut Frame, rect: Rect) {
+        let hints = " [Enter] Send  [Tab] Switch pane  [↑↓/Scroll] Navigate  [Ctrl+L] Logs  [Esc] Quit ";
+        let bar = Paragraph::new(hints).style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(bar, rect);
     }
 
     fn draw_logs_overlay(&self, frame: &mut Frame) {
@@ -254,15 +262,20 @@ impl App {
     }
 
     fn draw_storebox(&mut self, frame: &mut Frame, rect: Rect) {
-        let items: Vec<_> = self
+        let rows: Vec<Row> = self
             .storebox
             .iter()
-            .map(|(.., memo)| memo.as_str())
+            .map(|((_ts, sig), memo)| {
+                Row::new(vec![Cell::new(sig.as_str()), Cell::new(memo.as_str())])
+            })
             .collect();
 
-        let list = List::new(items)
+        let widths = [Constraint::Length(50), Constraint::Fill(1)];
+
+        let table = Table::new(rows, widths)
+            .header(Row::new(vec![Cell::new("Signature"), Cell::new("Memo")]))
             .style(Color::White)
-            .highlight_style(Modifier::REVERSED)
+            .row_highlight_style(Modifier::REVERSED)
             .highlight_symbol("> ")
             .block(
                 Block::bordered()
@@ -270,7 +283,7 @@ impl App {
                     .style(self.border_style(Pane::Stored)),
             );
 
-        frame.render_stateful_widget(list, rect, &mut self.storebox_list_state);
+        frame.render_stateful_widget(table, rect, &mut self.storebox_list_state);
     }
 
     fn draw_inbox(&mut self, frame: &mut Frame, rect: Rect) {
@@ -381,6 +394,20 @@ impl App {
                     .runtime
                     .spawn(publish_memo(self.ctx.clone(), id, memo));
             }
+            KeyCode::Up => match self.focus {
+                Pane::Inbox => self.inbox_list_state.select_previous(),
+                Pane::Outbox => self.outbox_list_state.select_previous(),
+                Pane::Stored => self.storebox_list_state.select_previous(),
+                Pane::Logs => self.logs_list_state.select_previous(),
+                Pane::Input => {}
+            },
+            KeyCode::Down => match self.focus {
+                Pane::Inbox => self.inbox_list_state.select_next(),
+                Pane::Outbox => self.outbox_list_state.select_next(),
+                Pane::Stored => self.storebox_list_state.select_next(),
+                Pane::Logs => self.logs_list_state.select_next(),
+                Pane::Input => {}
+            },
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Pane::Input => Pane::Outbox,

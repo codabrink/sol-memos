@@ -56,21 +56,22 @@ pub async fn load_memos(ctx: Arc<Ctx>) -> Result<()> {
 
     let values: Vec<String> = con.mget(&keys).await?;
 
-    let values: Vec<memos::Memo> = values
+    let values: Vec<Option<memos::Memo>> = values
         .into_iter()
-        .filter_map(|m| {
+        .map(|m| {
             let save: Option<MemoSave> = serde_json::from_str(&m)
                 .inspect_err(|e| tracing::error!("Error deserializing memo from redis: {e:?}"))
                 .ok();
             save
         })
-        .map(|m| m.into())
+        .map(|m| m.map(Into::into))
         .collect();
 
     let memos = keys
         .into_iter()
         .map(|k| k.trim_start_matches("memo-").to_string())
         .zip(values)
+        .filter_map(|(k, v)| Some((k, v?)))
         .collect();
 
     let _ = ctx.tx.send(UiEvent::Stored(memos));
