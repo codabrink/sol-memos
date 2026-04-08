@@ -4,7 +4,7 @@ use solana_pubkey::Pubkey;
 
 #[test]
 fn test_store_memo() {
-    let program_id = "H7vhVbT3VHTTBNN6Um6WQT956TD2LEgQUgbJxaeuKtFu";
+    let program_id = "9vGhzj9p9sZgMBkf7TSfyj9c9ruaADpBv2XWnTJqdKHM";
     let anchor_wallet = std::env::var("ANCHOR_WALLET").unwrap();
     let payer = read_keypair_file(&anchor_wallet).unwrap();
 
