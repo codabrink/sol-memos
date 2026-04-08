@@ -5,7 +5,9 @@ use crate::chain::publish_memo;
 use anchor_lang::prelude::*;
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use dotenvy::{dotenv, var};
 use helius::types::Cluster as HeliusCluster;
 use helius::{Helius, error::HeliusError};
@@ -18,10 +20,11 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 use solana_sdk::signature::{Keypair, read_keypair_file};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::fmt::MakeWriter;
@@ -29,6 +32,7 @@ use tracing_subscriber::fmt::MakeWriter;
 enum UiEvent {
     MemoPublished(usize),
     MemoInbox(Vec<(String, memos::Memo)>),
+    Stored(Vec<(String, memos::Memo)>),
     Log(String),
 }
 
@@ -88,11 +92,14 @@ struct App {
     outbox: Vec<(usize, String)>,
     outbox_list_state: ListState,
 
-    inbox: Vec<(String, memos::Memo)>,
+    inbox: BTreeMap<(u64, String), String>,
     inbox_list_state: ListState,
 
+    storebox: BTreeMap<(u64, String), String>,
+    storebox_list_state: ListState,
+
     logs: Vec<String>,
-    show_logs: bool,
+    logs_list_state: ListState,
 }
 
 #[derive(PartialEq, Eq)]
@@ -100,6 +107,8 @@ enum Pane {
     Outbox,
     Inbox,
     Input,
+    Stored,
+    Logs,
 }
 
 struct Ctx {
@@ -108,6 +117,7 @@ struct Ctx {
     helius: Helius,
     payer: Arc<Keypair>,
     redis: Arc<TokioMutex<redis::Client>>,
+    slot: AtomicU64,
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -134,17 +144,19 @@ impl App {
             exit: false,
             pending_memo: String::new(),
             rx,
-
             focus: Pane::Input,
 
             outbox: Vec::new(),
             outbox_list_state: ListState::default().with_selected(Some(0)),
 
-            inbox: Vec::new(),
+            inbox: BTreeMap::new(),
             inbox_list_state: ListState::default().with_selected(Some(0)),
 
+            storebox: BTreeMap::new(),
+            storebox_list_state: ListState::default().with_selected(Some(0)),
+
             logs: Vec::new(),
-            show_logs: false,
+            logs_list_state: ListState::default().with_selected(Some(0)),
         })
     }
     fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -190,7 +202,10 @@ impl App {
         self.draw_outbox(frame, outbox_inbox_layout[1]);
         self.draw_inbox(frame, outbox_inbox_layout[0]);
 
-        if self.show_logs {
+        // Draw the storebox (What's in redis)
+        self.draw_storebox(frame, column_layout[1]);
+
+        if self.focus == Pane::Logs {
             self.draw_logs_overlay(frame);
         }
     }
@@ -238,12 +253,28 @@ impl App {
         frame.render_stateful_widget(list, rect, &mut self.outbox_list_state);
     }
 
-    fn draw_inbox(&mut self, frame: &mut Frame, rect: Rect) {
+    fn draw_storebox(&mut self, frame: &mut Frame, rect: Rect) {
         let items: Vec<_> = self
-            .inbox
+            .storebox
             .iter()
-            .map(|(.., memo)| memo.memo.as_str())
+            .map(|(.., memo)| memo.as_str())
             .collect();
+
+        let list = List::new(items)
+            .style(Color::White)
+            .highlight_style(Modifier::REVERSED)
+            .highlight_symbol("> ")
+            .block(
+                Block::bordered()
+                    .title("Storebox (saved in redis))")
+                    .style(self.border_style(Pane::Stored)),
+            );
+
+        frame.render_stateful_widget(list, rect, &mut self.storebox_list_state);
+    }
+
+    fn draw_inbox(&mut self, frame: &mut Frame, rect: Rect) {
+        let items: Vec<_> = self.inbox.iter().map(|(.., memo)| memo.as_str()).collect();
 
         let list = List::new(items)
             .style(Color::White)
@@ -267,13 +298,22 @@ impl App {
         for event in self.rx.try_iter() {
             match event {
                 UiEvent::MemoInbox(memos) => {
-                    self.inbox.extend(memos);
+                    for (sig, memo) in memos {
+                        self.inbox.insert((memo.timestamp, sig), memo.memo);
+                    }
                 }
                 UiEvent::MemoPublished(published_id) => {
                     self.outbox.retain(|(id, ..)| *id != published_id);
                 }
                 UiEvent::Log(line) => {
                     self.logs.push(line);
+                }
+                UiEvent::Stored(memos) => {
+                    for (sig, memo) in memos {
+                        let k = (memo.timestamp, sig);
+                        self.inbox.remove(&k);
+                        self.storebox.insert(k, memo.memo);
+                    }
                 }
             }
         }
@@ -285,11 +325,32 @@ impl App {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                     self.handle_key_event(key_event)
                 }
+                Event::Mouse(mouse_event) => self.handle_mouse_event(mouse_event),
                 _ => {}
             }
         }
 
         Ok(())
+    }
+
+    fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => match self.focus {
+                Pane::Inbox => self.inbox_list_state.select_previous(),
+                Pane::Outbox => self.outbox_list_state.select_previous(),
+                Pane::Stored => self.storebox_list_state.select_previous(),
+                Pane::Logs => self.logs_list_state.select_previous(),
+                Pane::Input => {}
+            },
+            MouseEventKind::ScrollDown => match self.focus {
+                Pane::Inbox => self.inbox_list_state.select_next(),
+                Pane::Outbox => self.outbox_list_state.select_next(),
+                Pane::Stored => self.storebox_list_state.select_next(),
+                Pane::Logs => self.logs_list_state.select_next(),
+                Pane::Input => {}
+            },
+            _ => {}
+        }
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -298,7 +359,11 @@ impl App {
                 self.exit = true;
             }
             KeyCode::Char('l') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.show_logs = !self.show_logs;
+                if self.focus == Pane::Logs {
+                    self.focus = Pane::Input;
+                } else {
+                    self.focus = Pane::Logs;
+                }
             }
             KeyCode::Char(ch) => {
                 self.pending_memo.push(ch);
@@ -320,7 +385,9 @@ impl App {
                 self.focus = match self.focus {
                     Pane::Input => Pane::Outbox,
                     Pane::Outbox => Pane::Inbox,
-                    Pane::Inbox => Pane::Input,
+                    Pane::Inbox => Pane::Stored,
+                    Pane::Stored => Pane::Input,
+                    Pane::Logs => Pane::Logs,
                 };
             }
             _ => {}
@@ -362,6 +429,7 @@ impl Ctx {
             helius,
             payer: Arc::new(payer),
             redis: Arc::new(TokioMutex::new(redis)),
+            slot: AtomicU64::new(0),
         })
     }
 }
@@ -377,7 +445,15 @@ fn main() -> Result<()> {
         })
         .init();
 
+    app.ctx
+        .runtime
+        .block_on(persist::load_slot(app.ctx.clone()))?;
     app.ctx.runtime.spawn(chain::stream_chain(app.ctx.clone()));
 
-    ratatui::run(move |terminal| app.run(terminal))
+    let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+    let result = app.run(&mut terminal);
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
+    ratatui::restore();
+    result
 }

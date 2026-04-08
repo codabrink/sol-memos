@@ -9,8 +9,8 @@ skip-lint = false
 memos = "9vGhzj9p9sZgMBkf7TSfyj9c9ruaADpBv2XWnTJqdKHM"
 
 [provider]
-cluster = "localnet"
-# cluster = "devnet"
+# cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

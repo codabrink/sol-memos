@@ -1,37 +1,48 @@
+use crate::{Ctx, UiEvent, persist::store_memos};
 use anchor_client::{Client, Cluster, CommitmentConfig, Signer};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
 use helius::types::{
-    GetProgramAccountsV2Config, RpcTransactionsConfig, TransactionSubscribeFilter,
-    TransactionSubscribeOptions,
+    GetProgramAccountsV2Config, RpcTransactionsConfig, TransactionCommitment,
+    TransactionSubscribeFilter, TransactionSubscribeOptions,
 };
 use solana_client::rpc_response::UiAccountData;
 use solana_sdk::signature::Keypair;
 use solana_system_interface::program as system_program;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 use tokio_stream::StreamExt;
 
-use crate::{Ctx, UiEvent, persist::store_memos};
+pub async fn stream_chain(ctx: Arc<Ctx>) -> Result<()> {
+    fetch_memos(&ctx, Some(ctx.slot.load(Ordering::Relaxed))).await?;
+    // Load the memos from cache after so we can remove the items from the inbox as they're marked
+    // as cached.
+    crate::persist::load_memos(ctx.clone()).await?;
 
-pub async fn stream_chain(app: Arc<Ctx>) -> Result<()> {
-    let mut pagination_key = fetch_memos(&app, None).await?;
-
-    let ws = app.helius.ws().unwrap();
+    let ws = ctx.helius.ws().unwrap();
 
     let config = RpcTransactionsConfig {
         filter: TransactionSubscribeFilter::standard(&memos::ID),
-        options: TransactionSubscribeOptions::default(),
+        options: TransactionSubscribeOptions {
+            commitment: Some(TransactionCommitment::Finalized),
+            ..Default::default()
+        },
     };
     let (mut stream, _unsub) = ws.transaction_subscribe(config).await?;
-    while let Some(_) = stream.next().await {
-        pagination_key = fetch_memos(&app, pagination_key).await?;
+    while let Some(n) = stream.next().await {
+        fetch_memos(&ctx, Some(n.slot)).await?;
     }
 
     Ok(())
 }
 
-/// Fetches all of the memos after a provided pagination key
-async fn fetch_memos(ctx: &Arc<Ctx>, pagination_key: Option<String>) -> Result<Option<String>> {
+/// Fetches all memos, optionally requiring the response to reflect state at or after a given slot.
+async fn fetch_memos(ctx: &Arc<Ctx>, changed_since_slot: Option<u64>) -> Result<()> {
+    tracing::info!("Fetching memos. After slot: {changed_since_slot:?}");
+
+    if let Some(slot) = changed_since_slot {
+        ctx.slot.store(slot, Ordering::Relaxed);
+    }
+
     let response = ctx
         .helius
         .rpc()
@@ -39,7 +50,7 @@ async fn fetch_memos(ctx: &Arc<Ctx>, pagination_key: Option<String>) -> Result<O
             memos::ID.to_string(),
             GetProgramAccountsV2Config {
                 encoding: Some(helius::types::Encoding::Base64Zstd),
-                pagination_key,
+                changed_since_slot,
                 ..Default::default()
             },
         )
@@ -54,15 +65,12 @@ async fn fetch_memos(ctx: &Arc<Ctx>, pagination_key: Option<String>) -> Result<O
         memos.push((gpa.pubkey, memo));
     }
 
+    tracing::info!("Fetched {} memos.", memos.len());
     let _ = ctx.tx.send(UiEvent::MemoInbox(memos.clone()));
     // Store the memos in redis
-    tokio::spawn(store_memos(
-        ctx.clone(),
-        memos,
-        response.pagination_key.clone(),
-    ));
+    tokio::spawn(store_memos(ctx.clone(), memos, changed_since_slot));
 
-    Ok(response.pagination_key)
+    Ok(())
 }
 
 /// Publishes a memo to the chain on the memos program.

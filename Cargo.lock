@@ -2641,6 +2641,7 @@ dependencies = [
  "memos",
  "ratatui",
  "redis",
+ "serde",
  "serde_json",
  "shellexpand",
  "solana-client",

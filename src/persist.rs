@@ -1,12 +1,12 @@
-use crate::Ctx;
+use crate::{Ctx, UiEvent};
+use anyhow::Result;
 use redis::AsyncCommands;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, atomic::Ordering};
 
-pub async fn store_memos(
-    ctx: Arc<Ctx>,
-    memos: Vec<(String, memos::Memo)>,
-    pagination: Option<String>,
-) {
+pub type Slot = u64;
+
+pub async fn store_memos(ctx: Arc<Ctx>, memos: Vec<(String, memos::Memo)>, slot: Option<Slot>) {
     let con = ctx.redis.lock().await;
     let mut con = match con.get_multiplexed_async_connection().await {
         Ok(con) => con,
@@ -19,54 +19,53 @@ pub async fn store_memos(
     let mut pipe = redis::pipe();
     pipe.atomic();
     for (pda, memo) in &memos {
-        pipe.set(format!("memo-{pda}"), &memo.memo).ignore();
+        let save: MemoSave = memo.into();
+        let ser_memo = serde_json::to_string(&save).unwrap();
+        pipe.set(format!("memo-{pda}"), &ser_memo).ignore();
     }
-    if let Some(ref key) = pagination {
-        pipe.set("pagination", key).ignore();
+    if let Some(ref key) = slot {
+        pipe.set("slot", key).ignore();
     }
 
     if let Err(e) = pipe.query_async::<()>(&mut con).await {
         tracing::error!("Redis error: {e}");
     }
+
+    let _ = ctx.tx.send(UiEvent::Stored(memos));
 }
 
-pub async fn query_memos(ctx: Arc<Ctx>) -> (Vec<(String, String)>, Option<String>) {
+pub async fn load_slot(ctx: Arc<Ctx>) -> Result<()> {
     let con = ctx.redis.lock().await;
-    let mut con = match con.get_multiplexed_async_connection().await {
-        Ok(con) => con,
-        Err(e) => {
-            tracing::error!("Redis connection error: {e}");
-            return (vec![], None);
-        }
-    };
-
-    let keys: Vec<String> = match con.keys("memo-*").await {
-        Ok(keys) => keys,
-        Err(e) => {
-            tracing::error!("Redis error: {e}");
-            return (vec![], None);
-        }
-    };
-
-    let pagination: Option<String> = match con.get("pagination").await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Redis error: {e}");
-            return (vec![], None);
-        }
-    };
-
-    if keys.is_empty() {
-        return (vec![], pagination);
+    let mut con = con.get_multiplexed_async_connection().await?;
+    if let Some(slot) = con.get("slot").await? {
+        tracing::info!("Loaded slot from cache. Value: {slot}");
+        ctx.slot.store(slot, Ordering::Relaxed);
     }
 
-    let values: Vec<String> = match con.mget(&keys).await {
-        Ok(values) => values,
-        Err(e) => {
-            tracing::error!("Redis error: {e}");
-            return (vec![], pagination);
-        }
-    };
+    Ok(())
+}
+
+pub async fn load_memos(ctx: Arc<Ctx>) -> Result<()> {
+    let con = ctx.redis.lock().await;
+    let mut con = con.get_multiplexed_async_connection().await?;
+    let keys: Vec<String> = con.keys("memo-*").await?;
+
+    if keys.is_empty() {
+        return Ok(());
+    }
+
+    let values: Vec<String> = con.mget(&keys).await?;
+
+    let values: Vec<memos::Memo> = values
+        .into_iter()
+        .filter_map(|m| {
+            let save: Option<MemoSave> = serde_json::from_str(&m)
+                .inspect_err(|e| tracing::error!("Error deserializing memo from redis: {e:?}"))
+                .ok();
+            save
+        })
+        .map(|m| m.into())
+        .collect();
 
     let memos = keys
         .into_iter()
@@ -74,5 +73,36 @@ pub async fn query_memos(ctx: Arc<Ctx>) -> (Vec<(String, String)>, Option<String
         .zip(values)
         .collect();
 
-    (memos, pagination)
+    let _ = ctx.tx.send(UiEvent::Stored(memos));
+
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MemoSave {
+    memo: String,
+    timestamp: u64,
+}
+
+impl From<memos::Memo> for MemoSave {
+    fn from(memo: memos::Memo) -> Self {
+        Self {
+            memo: memo.memo,
+            timestamp: memo.timestamp,
+        }
+    }
+}
+impl From<&memos::Memo> for MemoSave {
+    fn from(memo: &memos::Memo) -> Self {
+        memo.clone().into()
+    }
+}
+
+impl From<MemoSave> for memos::Memo {
+    fn from(save: MemoSave) -> Self {
+        Self {
+            memo: save.memo,
+            timestamp: save.timestamp,
+        }
+    }
 }
