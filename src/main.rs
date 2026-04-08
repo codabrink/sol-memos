@@ -1,8 +1,11 @@
 mod chain;
 mod persist;
 
+use arboard::Clipboard;
+
 use crate::chain::publish_memo;
 use anchor_lang::prelude::*;
+use ansi_to_tui::IntoText;
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use crossterm::event::{
@@ -13,7 +16,7 @@ use helius::types::Cluster as HeliusCluster;
 use helius::{Helius, error::HeliusError};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Cell, List, ListState, Row, Table, TableState};
+use ratatui::widgets::{Cell, List, ListItem, ListState, Row, Table, TableState};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::Rect,
@@ -83,6 +86,7 @@ static ID: AtomicUsize = AtomicUsize::new(0);
 
 struct App {
     ctx: Arc<Ctx>,
+    clipboard: Option<Clipboard>,
     exit: bool,
     pending_memo: String,
     cursor_pos: usize,
@@ -142,6 +146,7 @@ impl App {
         let (tx, rx) = unbounded();
         Ok(Self {
             ctx: Arc::new(Ctx::new(tx)?),
+            clipboard: Clipboard::new().ok(),
             exit: false,
             pending_memo: String::new(),
             cursor_pos: 0,
@@ -215,18 +220,26 @@ impl App {
     }
 
     fn draw_hotkeys(&self, frame: &mut Frame, rect: Rect) {
-        let hints =
-            " [Enter] Send  [Tab] Switch pane  [↑↓/Scroll] Navigate  [Ctrl+L] Logs  [Esc] Quit ";
+        let hints = " [Enter] Send  [Tab] Switch pane  [↑↓/Scroll] Navigate  [Ctrl+L] Logs [Ctrl+C] Copy memo to clipboard [Esc] Quit ";
         let bar = Paragraph::new(hints).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(bar, rect);
     }
 
-    fn draw_logs_overlay(&self, frame: &mut Frame) {
+    fn draw_logs_overlay(&mut self, frame: &mut Frame) {
         let area = centered_rect(70, 60, frame.area());
-        let items: Vec<&str> = self.logs.iter().map(|s| s.as_str()).collect();
+        let items: Vec<ListItem> = self
+            .logs
+            .iter()
+            .map(|s| {
+                let text = s
+                    .into_text()
+                    .unwrap_or_else(|_| ratatui::text::Text::raw(s.as_str()));
+                ListItem::new(text)
+            })
+            .collect();
         let list = List::new(items).block(Block::bordered().title("Logs (ctrl+l to close)"));
         frame.render_widget(Clear, area);
-        frame.render_widget(list, area);
+        frame.render_stateful_widget(list, area, &mut self.logs_list_state);
     }
 
     fn border_style(&self, pane: Pane) -> Style {
@@ -247,10 +260,7 @@ impl App {
             );
         frame.render_widget(input, rect);
         // Place the terminal cursor inside the border (1 cell padding each side)
-        frame.set_cursor_position((
-            rect.x + 1 + self.cursor_pos as u16,
-            rect.y + 1,
-        ));
+        frame.set_cursor_position((rect.x + 1 + self.cursor_pos as u16, rect.y + 1));
     }
 
     fn draw_outbox(&mut self, frame: &mut Frame, rect: Rect) {
@@ -281,7 +291,10 @@ impl App {
         let widths = [Constraint::Length(50), Constraint::Fill(1)];
 
         let table = Table::new(rows, widths)
-            .header(Row::new(vec![Cell::new("Signature"), Cell::new("Memo")]))
+            .header(Row::new(vec![
+                Cell::new("Signature").style(Style::default().add_modifier(Modifier::BOLD)),
+                Cell::new("Memo").style(Style::default().add_modifier(Modifier::BOLD)),
+            ]))
             .style(Color::White)
             .row_highlight_style(Modifier::REVERSED)
             .highlight_symbol("> ")
@@ -335,6 +348,8 @@ impl App {
                         self.inbox.remove(&k);
                         self.storebox.insert(k, memo.memo);
                     }
+
+                    self.storebox_list_state.select_last();
                 }
             }
         }
@@ -384,6 +399,17 @@ impl App {
                     self.focus = Pane::Input;
                 } else {
                     self.focus = Pane::Logs;
+                }
+            }
+            KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(idx) = self.storebox_list_state.selected() {
+                    if let Some(((.., sig), memo)) = self.storebox.iter().nth(idx) {
+                        let sig = sig.clone();
+                        if let Some(clipboard) = &mut self.clipboard {
+                            tracing::info!("Copying memo to clipboard: {sig}");
+                            let _ = clipboard.set_text(format!("Signature: {sig}\nMemo: {memo}"));
+                        }
+                    }
                 }
             }
             KeyCode::Char(ch) => {
@@ -503,8 +529,7 @@ fn main() -> Result<()> {
 
     app.ctx
         .runtime
-        .block_on(persist::load_slot(app.ctx.clone()))?;
-    app.ctx.runtime.spawn(chain::stream_chain(app.ctx.clone()));
+        .spawn(chain::task_stream_chain(app.ctx.clone()));
 
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;

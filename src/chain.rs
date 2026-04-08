@@ -1,4 +1,7 @@
-use crate::{Ctx, UiEvent, persist::store_memos};
+use crate::{
+    Ctx, UiEvent,
+    persist::{self, store_memos},
+};
 use anchor_client::{Client, Cluster, CommitmentConfig, Signer};
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
@@ -12,7 +15,10 @@ use solana_system_interface::program as system_program;
 use std::sync::{Arc, atomic::Ordering};
 use tokio_stream::StreamExt;
 
-pub async fn stream_chain(ctx: Arc<Ctx>) -> Result<()> {
+pub async fn task_stream_chain(ctx: Arc<Ctx>) -> Result<()> {
+    // Load the slot from cache (if it exists)
+    persist::load_slot(ctx.clone()).await?;
+    // Fetch any memos we have missed while offline.
     fetch_memos(&ctx, Some(ctx.slot.load(Ordering::Relaxed))).await?;
     // Load the memos from cache after so we can remove the items from the inbox as they're marked
     // as cached.
