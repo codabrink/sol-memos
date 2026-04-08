@@ -484,11 +484,20 @@ impl Ctx {
             .enable_io()
             .build()?;
 
-        let redis = redis::Client::open(var("REDIS_URL")?)?;
+        let Ok(redis_url) = var("REDIS_URL") else {
+            eprintln!("Missing REDIS_URL env var.");
+            std::process::exit(1);
+        };
+        let Ok(helius_key) = var("HELIUS_KEY") else {
+            eprintln!("Missing HELIUS_KEY env var.");
+            std::process::exit(1);
+        };
+
+        let redis = redis::Client::open(redis_url)?;
 
         let helius = runtime.block_on(async {
             // Calling new_async is neccesary to be able to open a websocket on it.
-            let helius = Helius::new_async(&var("HELIUS_KEY")?, HeliusCluster::Devnet)
+            let helius = Helius::new_async(&helius_key, HeliusCluster::Devnet)
                 .await
                 // Some errors need to be decoded...
                 .inspect_err(|e| {
@@ -517,7 +526,7 @@ impl Ctx {
 }
 
 fn main() -> Result<()> {
-    dotenv()?;
+    let _ = dotenv();
 
     let mut app = App::new()?;
 
