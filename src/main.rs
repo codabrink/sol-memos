@@ -85,6 +85,7 @@ struct App {
     ctx: Arc<Ctx>,
     exit: bool,
     pending_memo: String,
+    cursor_pos: usize,
     rx: Receiver<UiEvent>,
 
     focus: Pane,
@@ -143,6 +144,7 @@ impl App {
             ctx: Arc::new(Ctx::new(tx)?),
             exit: false,
             pending_memo: String::new(),
+            cursor_pos: 0,
             rx,
             focus: Pane::Input,
 
@@ -213,7 +215,8 @@ impl App {
     }
 
     fn draw_hotkeys(&self, frame: &mut Frame, rect: Rect) {
-        let hints = " [Enter] Send  [Tab] Switch pane  [↑↓/Scroll] Navigate  [Ctrl+L] Logs  [Esc] Quit ";
+        let hints =
+            " [Enter] Send  [Tab] Switch pane  [↑↓/Scroll] Navigate  [Ctrl+L] Logs  [Esc] Quit ";
         let bar = Paragraph::new(hints).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(bar, rect);
     }
@@ -243,6 +246,11 @@ impl App {
                     .style(self.border_style(Pane::Input)),
             );
         frame.render_widget(input, rect);
+        // Place the terminal cursor inside the border (1 cell padding each side)
+        frame.set_cursor_position((
+            rect.x + 1 + self.cursor_pos as u16,
+            rect.y + 1,
+        ));
     }
 
     fn draw_outbox(&mut self, frame: &mut Frame, rect: Rect) {
@@ -379,14 +387,35 @@ impl App {
                 }
             }
             KeyCode::Char(ch) => {
-                self.pending_memo.push(ch);
+                self.pending_memo.insert(self.cursor_pos, ch);
+                self.cursor_pos += 1;
             }
             KeyCode::Backspace => {
-                self.pending_memo.pop();
+                if self.cursor_pos > 0 {
+                    self.cursor_pos -= 1;
+                    self.pending_memo.remove(self.cursor_pos);
+                }
+            }
+            KeyCode::Left => {
+                if self.cursor_pos > 0 {
+                    self.cursor_pos -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.cursor_pos < self.pending_memo.len() {
+                    self.cursor_pos += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.cursor_pos = 0;
+            }
+            KeyCode::End => {
+                self.cursor_pos = self.pending_memo.len();
             }
             KeyCode::Enter => {
                 let memo = self.pending_memo.clone();
                 self.pending_memo.clear();
+                self.cursor_pos = 0;
                 let id = ID.fetch_add(1, Ordering::SeqCst);
 
                 self.outbox.push((id, memo.clone()));
