@@ -1765,6 +1765,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "histogram"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2335,12 +2341,17 @@ dependencies = [
  "anchor-client",
  "anchor-lang",
  "anyhow",
+ "base64 0.22.1",
  "dotenvy",
  "helius",
+ "hex",
  "memos",
+ "serde_json",
  "shellexpand",
+ "solana-client",
  "solana-sdk",
  "solana-system-interface 3.2.0",
+ "solana-transaction-status",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",

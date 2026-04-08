@@ -14,10 +14,14 @@ tokio = { version = "1.51.0", features = ["full"]}
 memos = { path = "./memos/programs/memos" }
 shellexpand = "3.1.2"
 solana-sdk = "3"
-# serde_json = "1.0.149"
+serde_json = "1.0.149"
 # serde = { version = "1.0.228", features = ["derive"] }
 solana-system-interface = "3.2.0"
 tokio-stream = "0.1.18"
 tokio-tungstenite = "0.28.0"
+solana-transaction-status = "3"
+hex = "0.4.3"
+solana-client = "3.1.12"
+base64 = "0.22.1"
 
 [build-dependencies]
