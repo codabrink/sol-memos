@@ -292,7 +292,7 @@ impl App {
 
         let table = Table::new(rows, widths)
             .header(Row::new(vec![
-                Cell::new("Signature").style(Style::default().add_modifier(Modifier::BOLD)),
+                Cell::new("Address").style(Style::default().add_modifier(Modifier::BOLD)),
                 Cell::new("Memo").style(Style::default().add_modifier(Modifier::BOLD)),
             ]))
             .style(Color::White)

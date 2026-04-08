@@ -66,7 +66,11 @@ async fn fetch_memos(ctx: &Arc<Ctx>, changed_since_slot: Option<u64>) -> Result<
         let account_data: UiAccountData = serde_json::from_value(gpa.account.data)?;
         let bytes = account_data.decode().expect("Unexpected format");
 
-        let memo = memos::Memo::try_deserialize(&mut &*bytes)?;
+        let Ok(memo) = memos::Memo::try_deserialize(&mut &*bytes)
+            .inspect_err(|e| tracing::error!("Unable to deserialiize memo from the chain: {e:?}"))
+        else {
+            continue;
+        };
         memos.push((gpa.pubkey, memo));
     }
 
