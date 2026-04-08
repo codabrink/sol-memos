@@ -54,7 +54,7 @@ async fn fetch_memos(ctx: &Ctx, pagination_key: Option<String>) -> Result<Option
             .expect("Data arrived in unexpected format.");
 
         let memo = memos::Memo::try_deserialize(&mut &*bytes)?;
-        let _ = ctx.tx.send(UiEvent::NewMemo((gpa.pubkey, memo)));
+        let _ = ctx.tx.send(UiEvent::MemoInbox((gpa.pubkey, memo)));
     }
 
     Ok(response.pagination_key)
