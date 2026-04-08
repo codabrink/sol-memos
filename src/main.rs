@@ -15,6 +15,7 @@ use solana_client::rpc_response::UiAccountData;
 use solana_sdk::signature::{Keypair, read_keypair_file};
 use solana_system_interface::program as system_program;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -43,8 +44,13 @@ enum UiEvent {
 }
 
 struct App {
-    ui_rx: UnboundedReceiver<UiEvent>,
-    ui_tx: UnboundedSender<UiEvent>,
+    ctx: Arc<Ctx>,
+    exit: bool,
+    rx: UnboundedReceiver<UiEvent>,
+}
+
+struct Ctx {
+    tx: UnboundedSender<UiEvent>,
     runtime: Runtime,
     helius: Helius,
     payer: Arc<Keypair>,
@@ -52,8 +58,37 @@ struct App {
 
 impl App {
     fn new() -> Result<Self> {
+        let (tx, rx) = unbounded_channel();
+        Ok(Self {
+            ctx: Arc::new(Ctx::new(tx)?),
+            exit: false,
+            rx,
+        })
+    }
+    fn run(&self, terminal: &mut DefaultTerminal) -> Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+        }
+
+        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        todo!()
+    }
+
+    fn handle_events(&mut self) {
+        for event in self.rx.try_recv() {
+            match event {
+                UiEvent::NewMemo(memo) => {}
+            }
+        }
+    }
+}
+
+impl Ctx {
+    fn new(tx: UnboundedSender<UiEvent>) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread().build()?;
-        let (ui_tx, ui_rx) = unbounded_channel();
 
         let helius_key = var("HELIUS_KEY");
         let helius = Helius::new(&helius_key?, HeliusCluster::Devnet)
@@ -68,30 +103,26 @@ impl App {
             .unwrap();
         let payer = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json"))
             .expect("Example requires a keypair file");
+
         Ok(Self {
-            ui_rx,
-            ui_tx,
+            tx,
             runtime,
             helius,
             payer: Arc::new(payer),
         })
-    }
-
-    fn run(&self, terminal: &mut DefaultTerminal) -> Result<()> {
-        Ok(())
     }
 }
 
 fn main() -> Result<()> {
     dotenv()?;
 
-    let app = Arc::new(App::new()?);
-    app.runtime.spawn(chain::stream_chain(app.clone()));
+    let app = App::new()?;
+    app.ctx.runtime.spawn(chain::stream_chain(app.ctx.clone()));
 
     ratatui::run(move |terminal| app.run(terminal))
 }
 
-async fn publish_memo(app: Arc<App>, memo: String) -> Result<()> {
+async fn publish_memo(app: Arc<Ctx>, memo: String) -> Result<()> {
     let memo_kp = Arc::new(Keypair::new());
     let memo_pubkey = memo_kp.pubkey();
 

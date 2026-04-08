@@ -9,9 +9,9 @@ use solana_client::{rpc_config::UiAccountEncoding, rpc_response::UiAccountData};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
-use crate::{App, UiEvent};
+use crate::{Ctx, UiEvent};
 
-pub async fn stream_chain(app: Arc<App>) -> Result<()> {
+pub async fn stream_chain(app: Arc<Ctx>) -> Result<()> {
     let mut pagination_key = fetch_memos(&app, None).await?;
 
     let ws = app.helius.ws().unwrap();
@@ -28,7 +28,7 @@ pub async fn stream_chain(app: Arc<App>) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_memos(ctx: &App, pagination_key: Option<String>) -> Result<Option<String>> {
+async fn fetch_memos(ctx: &Ctx, pagination_key: Option<String>) -> Result<Option<String>> {
     let response = ctx
         .helius
         .rpc()
@@ -54,7 +54,7 @@ async fn fetch_memos(ctx: &App, pagination_key: Option<String>) -> Result<Option
             .expect("Data arrived in unexpected format.");
 
         let memo = memos::Memo::try_deserialize(&mut &*bytes)?;
-        let _ = ctx.ui_tx.send(UiEvent::NewMemo((gpa.pubkey, memo)));
+        let _ = ctx.tx.send(UiEvent::NewMemo((gpa.pubkey, memo)));
     }
 
     Ok(response.pagination_key)
