@@ -1,19 +1,19 @@
 mod chain;
+mod ctx;
 mod persist;
-
-use arboard::Clipboard;
+mod wrapped;
 
 use crate::chain::publish_memo;
 use anchor_lang::prelude::*;
 use ansi_to_tui::IntoText;
 use anyhow::Result;
+use arboard::Clipboard;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use dotenvy::{dotenv, var};
-use helius::types::Cluster as HeliusCluster;
-use helius::{Helius, error::HeliusError};
+pub use ctx::Ctx;
+use dotenvy::dotenv;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Cell, List, ListItem, ListState, Row, Table, TableState};
@@ -22,17 +22,14 @@ use ratatui::{
     layout::Rect,
     widgets::{Block, Clear, Paragraph},
 };
-use solana_sdk::signature::{Keypair, read_keypair_file};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::runtime::Runtime;
-use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::fmt::MakeWriter;
 
-enum UiEvent {
+pub enum UiEvent {
     MemoPublished(usize),
     MemoInbox(Vec<(String, memos::Memo)>),
     Stored(Vec<(String, memos::Memo)>),
@@ -114,15 +111,6 @@ enum Pane {
     Input,
     Stored,
     Logs,
-}
-
-struct Ctx {
-    tx: Sender<UiEvent>,
-    runtime: Runtime,
-    helius: Helius,
-    payer: Arc<Keypair>,
-    redis: Arc<TokioMutex<redis::Client>>,
-    slot: AtomicU64,
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -333,7 +321,11 @@ impl App {
             match event {
                 UiEvent::MemoInbox(memos) => {
                     for (sig, memo) in memos {
-                        self.inbox.insert((memo.count, sig), memo.memo);
+                        let key = (memo.count, sig);
+                        if self.storebox.contains_key(&key) {
+                            continue;
+                        }
+                        self.inbox.insert(key, memo.memo);
                     }
                 }
                 UiEvent::MemoPublished(published_id) => {
@@ -479,56 +471,6 @@ impl App {
             }
             _ => {}
         }
-    }
-}
-
-impl Ctx {
-    fn new(tx: Sender<UiEvent>) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_time()
-            .enable_io()
-            .build()?;
-
-        let Ok(redis_url) = var("REDIS_URL") else {
-            eprintln!("Missing REDIS_URL env var.");
-            std::process::exit(1);
-        };
-        let Ok(helius_key) = var("HELIUS_KEY") else {
-            eprintln!("Missing HELIUS_KEY env var.");
-            std::process::exit(1);
-        };
-
-        let redis = redis::Client::open(redis_url)?;
-
-        let helius = runtime.block_on(async {
-            // Calling new_async is neccesary to be able to open a websocket on it.
-            let helius = Helius::new_async(&helius_key, HeliusCluster::Devnet)
-                .await
-                // Some errors need to be decoded...
-                .inspect_err(|e| {
-                    if let HeliusError::Tungstenite(e) = e {
-                        if let tokio_tungstenite::tungstenite::Error::Http(e) = e {
-                            let body = e.body().as_ref().unwrap();
-                            println!("{}", String::from_utf8(body.clone()).unwrap());
-                        };
-                    }
-                })?;
-            anyhow::Ok(helius)
-        })?;
-
-        let Ok(payer) = read_keypair_file(&*shellexpand::tilde("~/.config/solana/id.json")) else {
-            eprintln!("Missing payer keypair at ~/.config/solana/id.json");
-            std::process::exit(1);
-        };
-
-        Ok(Self {
-            tx,
-            runtime,
-            helius,
-            payer: Arc::new(payer),
-            redis: Arc::new(TokioMutex::new(redis)),
-            slot: AtomicU64::new(0),
-        })
     }
 }
 

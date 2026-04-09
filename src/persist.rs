@@ -2,19 +2,13 @@ use crate::{Ctx, UiEvent};
 use anyhow::Result;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 pub type Slot = u64;
 
-pub async fn store_memos(ctx: Arc<Ctx>, memos: Vec<(String, memos::Memo)>, slot: Option<Slot>) {
+pub async fn store_memos(ctx: Arc<Ctx>, memos: Vec<(String, memos::Memo)>) -> Result<()> {
     let con = ctx.redis.lock().await;
-    let mut con = match con.get_multiplexed_async_connection().await {
-        Ok(con) => con,
-        Err(e) => {
-            tracing::error!("Redis connection error: {e}");
-            return;
-        }
-    };
+    let mut con = con.get_multiplexed_async_connection().await?;
 
     let mut pipe = redis::pipe();
     pipe.atomic();
@@ -24,24 +18,31 @@ pub async fn store_memos(ctx: Arc<Ctx>, memos: Vec<(String, memos::Memo)>, slot:
         pipe.set(format!("memo:{pda}"), &ser_memo).ignore();
         pipe.sadd("memos:index", pda).ignore();
     }
-    if let Some(ref key) = slot {
-        pipe.set("slot", key).ignore();
-    }
 
-    if let Err(e) = pipe.query_async::<()>(&mut con).await {
-        tracing::error!("Redis error: {e}");
-    }
+    pipe.query_async::<()>(&mut con).await?;
 
     let _ = ctx.tx.send(UiEvent::Stored(memos));
+
+    Ok(())
 }
 
 pub async fn load_slot(ctx: Arc<Ctx>) -> Result<()> {
     let con = ctx.redis.lock().await;
     let mut con = con.get_multiplexed_async_connection().await?;
-    if let Some(slot) = con.get("slot").await? {
+    if let Some(slot) = con.get::<_, Option<Slot>>("slot").await? {
         tracing::info!("Loaded slot from cache. Value: {slot}");
-        ctx.slot.store(slot, Ordering::Relaxed);
+        ctx.set_slot(slot, false).await;
     }
+
+    Ok(())
+}
+
+pub async fn set_slot(ctx: Arc<Ctx>) -> Result<()> {
+    let con = ctx.redis.lock().await;
+    let mut con = con.get_multiplexed_async_connection().await?;
+
+    let slot = ctx.slot();
+    let _: () = con.set("slot", slot).await?;
 
     Ok(())
 }
@@ -63,9 +64,7 @@ pub async fn load_memos(ctx: Arc<Ctx>) -> Result<()> {
         .map(|m| {
             let save: Option<MemoSave> = m.and_then(|s| {
                 serde_json::from_str(&s)
-                    .inspect_err(|e| {
-                        tracing::error!("Error deserializing memo from redis: {e:?}")
-                    })
+                    .inspect_err(|e| tracing::error!("Error deserializing memo from redis: {e:?}"))
                     .ok()
             });
             save
